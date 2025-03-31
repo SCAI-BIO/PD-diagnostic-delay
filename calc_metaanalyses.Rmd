@@ -1,0 +1,71 @@
+# Script for calculating metaanalyses for demographic and clinical factors across the three cohorts
+```{r}
+library(meta)
+```
+
+# metaanalysis for binary factors (Sex, family history of PD, motor phenotype, dominant side)
+```{r}
+# add values from the three studies PPMI, ICEBERG, LuxPARK here, repeat for each outcome
+n.e <- c() #
+mean.e <- c()
+sd.e <- c()
+n.c <- c()
+mean.c <- c()
+sd.c <- c()
+title <- "..."
+xlab <- "<- Associated with XXX | associated with XXX ->"
+
+studlab <- c("PPMI", "ICEBERG", "LuxPARK")
+
+meta_res <- metacont(n.e = n.e,
+                     mean.e = mean.e,
+                     sd.e = sd.e,
+                     n.c = n.c,
+                     mean.c = mean.c,
+                     sd.c = sd.c,
+                     studlab = studlab,
+                     sm = "SMD",
+                     method.smd = "Cohen",
+                     null.effect = 0,
+                     random = TRUE,
+                     common = FALSE,
+                     title = title)
+print(meta_res)
+
+forest.meta(meta_res,
+            rightcols = c("effect", "ci", "pval"),
+            ref = 0,
+            xlab = xlab,
+            hetstat = FALSE,
+            header.line = "both")
+
+rm(n.e, mean.e, sd.e, n.c, mean.c, sd.c, title, xlab, studlab, meta_res)
+```
+
+# metaanalysis for correlations (Age at onset vs timeshift, predicted Age at onset vs. patient-reported time to diagnosis, timeshift vs patient-reported time to diagnosis)
+```{r}
+# add values from the three studies PPMI, ICEBERG, LuxPARK here, repeat for each outcome
+n <- c()
+cor <- c()
+title <- "..."
+
+studlab <- c("PPMI", "ICEBERG", "LuxPARK")
+
+meta_res <- metacor(cor = cor,
+                    n = n,
+                    studlab = studlab,
+                    null.effect = 0,
+                    sm = "ZCOR",
+                    random = TRUE,
+                    common = FALSE,
+                    title = title)
+print(meta_res)
+
+forest.meta(meta_res,
+            rightcols = c("effect", "ci", "pval"),
+            ref = 0,
+            xlab = "<- Associated with early diagnosis | associated with late diagnosis ->",
+            hetstat = FALSE,
+            header.line = "both"
+)
+```

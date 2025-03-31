@@ -1,0 +1,619 @@
+# Script for calculating association of predicted symptoms at t=0 with estimated diagnostic delay (i.e., timeshift) (Fig. 1F, Table S4 & Forest Plots) and validation of the predictive models (Fig. S9)
+
+```{r}
+library(lme4)
+library(ordinal)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(meta)
+library(grid)
+library(psych)
+
+# general definitions
+study_names <- c("ppmi", "iceberg", "luxpark")
+
+# label definitions
+category_names <- stack(list("overall_severity" = "Overall severity",
+                             "apathy" = "Apathy",
+                             "nonmotor_general" = "Non motor symptoms",
+                             "motor_general" = "Motor symptoms",
+                             "pigd/axial" = "Axial & PIGD",
+                             "depression" = "Depression",
+                             "cognition_conceptualization" = "Conceptualization",
+                             "sleep_general" = "Sleep",
+                             "fatigue" = "Fatigue",
+                             "hallucination" = "Hallucinations",
+                             "anxiety" = "Anxiety",
+                             "cognition_language" = "Language",
+                             "cognition_visuexec" = "Visuo-executive",
+                             "cognition_overall" = "Overall cognition",
+                             "autonomic" = "Autonomic",
+                             "cognition_memory" = "Memory",
+                             "impulsivity" = "Impulsivity",
+                             "pain" = "Pain",
+                             "tremor" = "Tremor",
+                             "cognition_attention" = "Attention",
+                             "sleep_rem" = "RBD",
+                             "smell" = "Smell"))
+colnames(category_names) <- c("label", "category")
+
+# can be overwritten by cells below, this function provides an empty filtering function
+filenames_suffix <- ""
+filter_data <- function(data) {
+    return(data)
+}
+
+# load outcome-category mapping
+outcomes_categories <- read.csv("outcomes_categories.csv")
+```
+
+# the following cells can be executed to provide additional subgroup filtering
+# execute to perform subgroup analysis for: female
+```{r}
+filenames_suffix <- "_female"
+filter_data <- function(data) {
+    return(data[data$Sex == 0, ])
+}
+```
+
+# execute to perform subgroup analysis for: male
+```{r}
+filenames_suffix <- "_male"
+filter_data <- function(data) {
+    return(data[data$Sex == 1, ])
+}
+```
+
+# execute to perform subgroup analysis for: early diagnosis 
+```{r}
+filenames_suffix <- "_early" 
+filter_data <- function(data) {
+    age_split <- median(c(read_csv("studydata/ppmi_bl.csv")$Age_at_diagnosis,
+                          read_csv("studydata/iceberg_bl.csv")$Age_at_diagnosis,
+                          read_csv("studydata/luxpark.csv")$Age_at_diagnosis))
+    return(data[data$Age_at_diagnosis_scaled <= age_split, ])
+}
+```
+
+# execute to perform subgroup analysis for: late diagnosis 
+```{r}
+filenames_suffix <- "_late"
+filter_data <- function(data) {
+    age_split <- median(c(read_csv("studydata/ppmi_bl.csv")$Age_at_diagnosis,
+                          read_csv("studydata/iceberg_bl.csv")$Age_at_diagnosis,
+                          read_csv("studydata/luxpark.csv")$Age_at_diagnosis))
+    return(data[data$Age_at_diagnosis_scaled > age_split, ])
+}
+```
+# execute to perform subgroup analysis for: EOPD (<50y)
+```{r}
+filenames_suffix <- "_eopd"
+filter_data <- function(data) {
+  return(data[data$Age_at_diagnosis < 50, ])
+}
+```
+# execute to perform subgroup analysis for: LOPD (>50y)
+```{r}
+filenames_suffix <- "_lopd"
+filter_data <- function(data) {
+  return(data[data$Age_at_diagnosis > 50, ])
+}
+```
+# function definitions
+```{r}
+# min max normalization
+min_max_norm <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+}
+
+# check conditions if predictions can be made
+check_prediction_conditions <- function(data, outcome, skip_min_obs = 30, verbose = FALSE) {
+    # skip, if outcome is not measured in this study
+    if (!(outcome %in% colnames(data))) {
+        if (verbose) {
+            print(paste(outcome, "skipped because not in data columns."))
+        }
+        return(FALSE)
+    }
+
+    # select columns
+    data_test <- data[c("Patient_ID", "fit_latenttime", outcome)]
+
+    # rename the outcome column (special characters cause errors)
+    colnames(data_test)[colnames(data_test) == outcome] <- "outcome"
+
+    # remove rows with NA values as required for the models used below
+    data_test <- drop_na(data_test)
+
+    # because we want to calculate slopes, we have to remove all patients with only one measurement
+    data_test <- data_test %>% group_by(Patient_ID) %>% filter(n() > 1)
+
+    # skip outcomes with less than x measurements
+    if (nrow(data_test) < skip_min_obs) {
+        if (verbose) {
+            print(paste(outcome, "skipped because <", skip_min_obs, "observations"))
+        }
+        return(FALSE)
+    }
+
+    return(TRUE)
+}
+
+predict_linear <- function(data, outcome, min_value, invert, predicted_data = NULL) {
+    # select columns
+    data_test <- data[c("Patient_ID", "fit_latenttime", outcome)]
+
+    # rename the outcome column (special characters cause errors)
+    colnames(data_test)[colnames(data_test) == outcome] <- "outcome"
+
+    # remove rows with NA values as required for the models used below
+    data_test <- drop_na(data_test)
+
+    # because we want to calculate slopes, we have to remove all patients with only one measurement
+    data_test <- data_test %>% group_by(Patient_ID) %>% filter(n() > 1)
+
+    # create model, if it fails try a more simple model with only random intercept
+    lmm <- tryCatch({
+        lmer(outcome ~ fit_latenttime + (1 + fit_latenttime | Patient_ID), data = data_test)
+    }, error = function(e) {
+        lmer(outcome ~ fit_latenttime + (1 | Patient_ID), data = data_test)
+    })
+
+    # if this model produces a singular fit regarding the Intercept, try a more simple model with only random intercept
+    if (length(unique(ranef(lmm)$Patient_ID$"(Intercept)")) == 1) {
+        lmm <- lmer(outcome ~ fit_latenttime + (1 | Patient_ID), data = data_test)
+    }
+
+    # create prediction dataframe
+    if (is.null(predicted_data)) {
+        predicted_data <- data.frame(fit_latenttime = 0, Patient_ID = unique(data_test$Patient_ID))
+    }
+
+    # predict using the LMM
+    predicted_data[[outcome]] <- predict(lmm, predicted_data, re.form = NULL) # re.form =NULL indicates that random effects should be included
+
+    # limit to theoretical minimum of scale
+    if (invert) {
+        predicted_data[[outcome]] <- pmin(predicted_data[[outcome]], min_value)
+    } else {
+        predicted_data[[outcome]] <- pmax(predicted_data[[outcome]], min_value)
+    }
+
+    return(predicted_data)
+}
+
+predict_binary <- function(data, outcome, predicted_data = NULL) {
+    # select columns
+    data_test <- data[c("Patient_ID", "fit_latenttime", outcome)]
+
+    # rename the outcome column (special characters cause errors)
+    colnames(data_test)[colnames(data_test) == outcome] <- "outcome"
+
+    # remove rows with NA values as required for the models used below
+    data_test <- drop_na(data_test)
+
+    # because we want to calculate slopes, we have to remove all patients with only one measurement
+    data_test <- data_test %>% group_by(Patient_ID) %>% filter(n() > 1)
+
+    # create model
+    bmm <- glmer("outcome ~ fit_latenttime + (1 + fit_latenttime | Patient_ID)", data = data_test, family = "binomial")
+
+    # create prediction dataframe
+    if (is.null(predicted_data)) {
+        predicted_data <- data.frame(fit_latenttime = 0, Patient_ID = unique(data_test$Patient_ID))
+    }
+
+    # predict using the BMM
+    predicted_data$outcome_raw <- predict(bmm, predicted_data, re.form = NULL) # re.form =NULL indicates that random effects should be included
+
+    predicted_data$outcome_raw <- plogis(predicted_data$outcome_raw)
+
+    # round to integers
+    predicted_data[[outcome]] <- round(predicted_data$outcome_raw)
+
+    return(predicted_data)
+}
+
+predict_ordinal <- function(data, outcome, predicted_data = NULL) {
+    # select columns
+    data_test <- data[c("Patient_ID", "fit_latenttime", outcome)]
+
+    # rename the outcome column (special characters cause errors)
+    colnames(data_test)[colnames(data_test) == outcome] <- "outcome"
+
+    # remove rows with NA values as required for the models used below
+    data_test <- drop_na(data_test)
+
+    # because we want to calculate slopes, we have to remove all patients with only one measurement
+    data_test <- data_test %>% group_by(Patient_ID) %>% filter(n() > 1)
+
+    # outcome and Patient_ID to factor
+    data_test$outcome <- as.factor(data_test$outcome)
+    data_test$Patient_ID <- as.factor(data_test$Patient_ID)
+
+    # create model
+    omm <- tryCatch({
+        clmm(outcome ~ fit_latenttime + (1 + fit_latenttime | Patient_ID), data = data_test)
+    }, error = function(e) {
+        clmm(outcome ~ fit_latenttime + (1 | Patient_ID), data = data_test)
+    })
+
+    # create prediction dataframe
+    if (is.null(predicted_data)) {
+        predicted_data <- data.frame(fit_latenttime = 0, Patient_ID = unique(data_test$Patient_ID))
+    }
+
+    # Get the random effects
+    random_effects <- ranef(omm)$Patient_ID
+
+    # Match the random effects to the patients in the new data
+    predicted_data$re_Intercept <- random_effects[match(predicted_data$Patient_ID, levels(data_test$Patient_ID)), 1]
+    predicted_data$re_fit_latenttime <- random_effects[match(predicted_data$Patient_ID, levels(data_test$Patient_ID)), 2]
+
+    # Get the fixed effects predictions
+    predicted_data$outcome_raw <- coef(omm)[["fit_latenttime"]] * predicted_data$fit_latenttime # there is no fixed intercept for omm
+
+    # Add the random effects to the fixed effects predictions; depending on which model was used above
+    if (is.null(predicted_data$re_fit_latenttime)) {
+        # model with only random intercept
+        predicted_data$outcome_raw <-  predicted_data$outcome_raw + predicted_data$re_Intercept
+    } else {
+        # random intercept + random slope
+        predicted_data$outcome_raw <-  predicted_data$outcome_raw + predicted_data$re_Intercept + predicted_data$re_fit_latenttime * predicted_data$fit_latenttime
+    }
+
+    predicted_data[[outcome]] <- levels(data_test$outcome)[1]
+    for (level_id in seq(1, length(levels(data_test$outcome)) - 1)) {
+        if (nrow(predicted_data[predicted_data$outcome_raw > omm$coefficients[[level_id]], ]) > 0) {
+            predicted_data[predicted_data$outcome_raw > omm$coefficients[[level_id]], ][[outcome]] <- levels(data_test$outcome)[level_id + 1]
+        }
+    }
+
+    predicted_data[[outcome]] <- as.numeric(predicted_data[[outcome]])
+
+    return(predicted_data)
+}
+
+```
+
+# load clinical study data
+```{r}
+studies <- list()
+studies_bl <- list()
+for (study_name in study_names) {
+    if (file.exists(paste("studydata/", study_name, "_visits.csv", sep = ""))) {
+        studies[[study_name]] <- filter_data(read.csv(paste("studydata/", study_name, "_visits.csv", sep = "")))
+        studies_bl[[study_name]] <- filter_data(read.csv(paste("studydata/", study_name, "_bl.csv", sep = "")))
+    }
+}
+rm(study_name)
+```
+
+# predict first visit from data after first visit + 1 year (for all outcomes; validation of our models)
+```{r}
+stats_all <- data.frame()
+
+print(paste("suffix:", filenames_suffix))
+
+for (study in names(studies)) {
+    print(study)
+    for (outcome in outcomes_categories$outcome) {
+        print(paste("...", outcome, sep = ""))
+
+        regression_type <- outcomes_categories[outcomes_categories$outcome == outcome, ]$regression
+        invert <- outcomes_categories[outcomes_categories$outcome == outcome, ]$invert
+        min_value <- outcomes_categories[outcomes_categories$outcome == outcome, ]$min_value
+
+        if (!check_prediction_conditions(data = studies[[study]], outcome = outcomes)) {
+            print(".......skipped")
+            next
+        }
+
+        data_filtered <- drop_na(studies[[study]][c("Patient_ID", "fit_latenttime", outcome)])
+
+        # select training data: only data at least 1 year after first measurement and only PwPD with at least 2 measurements >= 1 year after first measurement
+        train_data <- data_filtered %>% group_by(Patient_ID) %>% filter(fit_latenttime >= 1 + min(fit_latenttime, na.rm = TRUE)) # use only visits at least 1 year later
+        train_data <- train_data %>% group_by(Patient_ID) %>% filter(n() > 1)
+
+        # select test data: only first measurement, only PwPD with training data available
+        test_data <- data_filtered %>% group_by(Patient_ID) %>% filter(fit_latenttime == min(fit_latenttime, na.rm = TRUE))
+        test_data <- test_data[test_data$Patient_ID %in% train_data$Patient_ID, ]
+
+        # skip if only <=2 PwPD remaining
+        n <- length(unique(test_data$Patient_ID))
+        if (n <= 2) {
+            stop("only <= 2 remaining patients, skipped")
+        }
+
+        # null model
+        predicted_data_null <- train_data %>% group_by(Patient_ID) %>% filter(fit_latenttime == min(fit_latenttime, na.rm = TRUE)) # null model: use 2nd observation value
+
+        # predict data
+        tryCatch({
+            predicted_data <- switch(regression_type,
+                                     "linear" = predict_linear(data = train_data, outcome = outcome, predicted_data = test_data, invert = invert, min_value = min_value),
+                                     "binary" = predict_binary(data = train_data, outcome = outcome, predicted_data = test_data),
+                                     "ordinal" = predict_ordinal(data = train_data, outcome = outcome, predicted_data = test_data),
+                                     NULL)
+            # calculate MSE
+            mse <- sum((predicted_data[[outcome]] - test_data[[outcome]]) ** 2)
+            mse_null <- sum((predicted_data_null[[outcome]] - test_data[[outcome]]) ** 2)
+
+            # calculate total sum of squares 
+            sst <- sum((test_data[[outcome]] - mean(test_data[[outcome]])) ** 2)
+
+            # calculate R2
+            r2 <- 1 - (mse / sst)
+            r2_null <- 1 - (mse_null / sst)
+
+            stats_all <- rbind(stats_all, data.frame(study = study, outcome = outcome, n = n, mse = mse, mse_null = mse_null, sst = sst, r2 = r2, r2_null = r2_null, improvement = 1 - (mse / mse_null)))
+        }, error = function(e) {
+            print(e)
+        })
+
+    }
+}
+
+# sort data.frame by improvement
+stats_all <- stats_all[order(stats_all$improvement), ]
+
+# save to disk, one file per study
+for (study in unique(stats_all$study)) {
+    write.csv(stats_all[stats_all$study == study, ], file = paste("intermediate_results/mse_", study, filenames_suffix, ".csv", sep = ""))
+}
+
+rm(stats_all, study, outcome, regression_type, data_filtered, train_data, test_data, predicted_data_null, predicted_data, mse, mse_null, invert, min_value, n)
+
+```
+
+# list improvements / no improvements 
+```{r}
+# load from disk
+stats_all <- data.frame()
+for (study in study_names) {
+    if (file.exists(paste("intermediate_results/mse_", study, filenames_suffix, ".csv", sep = ""))) {
+        stats_all <- rbind(stats_all, read.csv(paste("intermediate_results/mse_", study, filenames_suffix, ".csv", sep = "")))
+    }
+}
+
+print("improvement")
+print(stats_all[stats_all$improvement > 0, ][c("study", "outcome", "n", "mse", "mse_null", "improvement")])
+
+print("no improvement")
+print(stats_all[stats_all$improvement < 0, ][c("study", "outcome", "n", "mse", "mse_null", "improvement")])
+
+```
+
+# correlate prediction at time zero vs time shift (for all outcomes/studies)
+```{r}
+stats_all <- data.frame()
+
+for (study in names(studies)) {
+    print(study)
+    for (outcome in outcomes_categories$outcome) {
+        print(paste("...", outcome, sep = ""))
+
+        regression_type <- outcomes_categories[outcomes_categories$outcome == outcome, ]$regression
+        invert <- outcomes_categories[outcomes_categories$outcome == outcome, ]$invert
+        min_value <- outcomes_categories[outcomes_categories$outcome == outcome, ]$min_value
+
+        if (!check_prediction_conditions(data = studies[[study]], outcome = outcome)) {
+            print(".......skipped")
+            next
+        }
+
+        data_filtered <- drop_na(studies[[study]][c("Patient_ID", "fit_latenttime", outcome, "fit_delta")])
+
+        tryCatch({
+            predicted_data <- switch(regression_type,
+                                     "linear" = predict_linear(data = data_filtered, outcome = outcome, invert = invert, min_value = min_value),
+                                     "binary" = predict_binary(data = data_filtered, outcome = outcome),
+                                     "ordinal" = predict_ordinal(data = data_filtered, outcome = outcome),
+                                     NULL)
+
+            # combine predictions with fit_delta
+            predicted_data <- merge(predicted_data, studies_bl[[study]][c("Patient_ID", "fit_delta")], all.x = TRUE, all.y = FALSE, by = "Patient_ID")
+            predicted_data$prediction <- predicted_data[[outcome]]
+
+            # if all predictions are equal, we can't calculate a correlation coefficient -> throw an error and continue with next outcome
+            if (length(unique(predicted_data$prediction)) == 1) {
+                stop("singular predictions")
+            }
+
+            # correlation
+            corr_res <- switch(regression_type,
+                               "linear" = cor.test(predicted_data$fit_delta, predicted_data$prediction, method = "pearson"),
+                               "ordinal" = corr.test(predicted_data$fit_delta, predicted_data$prediction, method = "kendall"), # from psych package
+                               "binary" = cor.test(predicted_data$fit_delta, predicted_data$prediction, method = "pearson")) # point-biserial
+
+            if (regression_type == "ordinal") { # values are stored in another way by the psych package
+                stats <- data.frame(study = study, outcome = outcome, regression = regression_type, coef = corr_res$ci$r, corr_p = corr_res$ci$p,
+                                    coef_lower = corr_res$ci$lower, coef_upper = corr_res$ci$upper, n = nrow(predicted_data))
+            } else {
+                stats <- data.frame(study = study, outcome = outcome, regression = regression_type, coef = corr_res$estimate[[1]], corr_p = corr_res$p.value,
+                                    coef_lower = corr_res$conf.int[1], coef_upper = corr_res$conf.int[2], n = nrow(predicted_data))
+            }
+            stats_all <- rbind(stats_all, stats)
+
+        }, error = function(e) {
+            print(paste("......ERROR:", conditionMessage(e), "(skipped)"))
+        })
+
+    }
+}
+
+# Benjamini Hochberg p-value correction
+stats_all$corr_p_adj <- p.adjust(stats_all$corr_p, method = "BH")
+
+# sort data.frame by p value
+stats_all <- stats_all[order(stats_all$corr_p), ]
+
+# calculate SEM of correlation coefficient estimate from confidence interval
+stats_all$coef_sem <- abs(stats_all$coef_upper - stats_all$coef_lower) / 2 / 1.96
+
+# save to disk, one file per study
+for (study in unique(stats_all$study)) {
+    write.csv(stats_all[stats_all$study == study, ], file = paste("intermediate_results/coefs_", study, filenames_suffix, ".csv", sep = ""))
+}
+
+rm(study, outcome, regression_type, data_filtered, predicted_data, corr_res, stats, invert, min_value)
+
+```
+
+# list positive + negative associations (individual scores/studies)
+```{r}
+# load from disk
+stats_all <- data.frame()
+for (study in study_names) {
+    if (file.exists(paste("intermediate_results/coefs_", study, filenames_suffix, ".csv", sep = ""))) {
+        stats_all <- rbind(stats_all, read.csv(paste("intermediate_results/coefs_", study, filenames_suffix, ".csv", sep = "")))
+    }
+}
+
+print("positive associations:")
+print(stats_all[stats_all$corr_p_adj < 0.05 & stats_all$coef > 0, ][c("study", "outcome", "coef")])
+
+print("negative associations:")
+print(stats_all[stats_all$corr_p_adj < 0.05 & stats_all$coef < 0, ][c("study", "outcome", "coef")])
+
+```
+
+# create metaanalysis + forest plots + save
+```{r}
+# meta analysis function for one symptom domain
+perform_metaanalysis <- function(data, category, create_plot) {
+    study_to_label <- function(study) {
+        if (study == "ppmi") {
+            return("PPMI")
+        } else if (study == "iceberg") {
+            return("ICEBERG")
+        } else {
+            return("LuxPARK")
+        }
+    }
+
+    # invert scores where low value means high impairment / high value means less impairment
+    data[data$invert == 1, ]$coef <- -1 * data[data$invert == 1, ]$coef
+    data[data$invert == 1, ]$coef_lower <- -1 * data[data$invert == 1, ]$coef_lower
+    data[data$invert == 1, ]$coef_upper <- -1 * data[data$invert == 1, ]$coef_upper
+
+    meta_res <- metamean(n = data$n,
+                         mean = data$coef,
+                         sd = data$coef_sem * sqrt(data$n),
+                         data = data,
+                         subgroup = lapply(data$study, study_to_label),
+                         studlab = data$label,
+                         sm = "MRAW",
+                         null.effect = 0,
+                         random = TRUE,
+                         common = FALSE,
+                         title = category_names[category_names$category == category, ]$label)
+
+    if (create_plot) {
+        most_extreme_ci_value <- max(abs(meta_res$upper), # individual study
+                                     abs(meta_res$lower), # individual study
+                                     abs(meta_res$lower.random), # pooled effect
+                                     abs(meta_res$upper.random), # pooled effect
+                                     abs(meta_res$lower.random.w), # subgroup pooled effect
+                                     abs(meta_res$upper.random.w)) # subgroup pooled effect
+
+        forest(meta_res,
+                    rightcols = c("effect", "ci"),
+                    xlim = c(-most_extreme_ci_value, most_extreme_ci_value),
+                    plotwidth = "12 cm",
+                    ref = 0,
+                    xlab = "<- Associated with early diagnosis | associated with late diagnosis ->",
+                    subgroup.hetstat = FALSE,
+                    hetstat = FALSE,
+                    test.subgroup = FALSE,
+                    text.addline1 = paste("\n\n\n\n\n\nThree-level metaanalysis using random\neffects to calculate an overall\nregression coefficient estimate for\n",
+                                          category_names[category_names$category == category, ]$label,
+                                          " across cohorts.\nThe dashed line indicates the overall\nmean estimate. The solid line\nindicates no effect.",
+                                          sep = ""),
+                    subgroup.name = "Cohort",
+                    header.line = "both")
+
+        # add heading
+        grid::grid.text(paste("Forest plot for domain", category_names[category_names$category == category, ]$label), .5, .97, gp = gpar(cex = 1.7))
+    }
+
+    ret <- data.frame(
+        "study" = unlist(c("overall", meta_res$subgroup.levels)),
+        "mean" = unname(c(meta_res$TE.random, meta_res$TE.random.w)),
+        "lower" = unname(c(meta_res$lower.random, meta_res$lower.random.w)),
+        "upper" = unname(c(meta_res$upper.random, meta_res$upper.random.w)),
+        "p" = unname(c(meta_res$pval.random, meta_res$pval.random.w))
+    )
+    ret$category <- category
+    rownames(ret) <- NULL
+
+    return(ret)
+}
+
+# read stats
+stats_all <- data.frame()
+for (study in study_names) {
+    if (file.exists(paste("intermediate_results/coefs_", study, filenames_suffix, ".csv", sep = ""))) {
+        stats_all <- rbind(stats_all, read.csv(paste("intermediate_results/coefs_", study, filenames_suffix, ".csv", sep = "")))
+    }
+}
+
+# append category
+stats_all <- merge(stats_all, outcomes_categories[c("outcome", "subcategory", "label", "invert")], by = "outcome", all.x = TRUE, all.y = FALSE)
+
+# perform all meta analyses and save to pdf + csv
+data_meta <- data.frame()
+pdf(file = paste("output/plots/forrestplots", filenames_suffix, ".pdf", sep = ""), width = 13, height = 9)
+for (category in unique(stats_all$subcategory)){
+    data_category <- stats_all[stats_all$subcategory == category, ]
+    if (nrow(data_category) > 0) {
+        res <- perform_metaanalysis(data = data_category, category = category, create_plot = TRUE)
+        data_meta <- rbind(data_meta, res)
+    }
+}
+dev.off()
+
+# p-value adjusting (within each study / within overall)
+data_meta$p_adj <- NA
+data_meta$lower_adj <- NA
+data_meta$upper_adj <- NA
+for (study in unique(data_meta$study)) {
+    data_meta[data_meta$study == study, ]$p_adj <- p.adjust(data_meta[data_meta$study == study, ]$p, method = "BH")
+    sd <- (data_meta$upper - data_meta$lower) / 2 / 1.96
+    data_meta$lower_adj <- data_meta$mean - qnorm(1 - 0.05 / (data_meta$p_adj / data_meta$p) / 2) * sd
+    data_meta$upper_adj <- data_meta$mean +  qnorm(1 - 0.05 / (data_meta$p_adj / data_meta$p) / 2) * sd
+}
+
+# add category label
+data_meta <- merge(data_meta, category_names, by.x = "category", by.y = "category", all.x = TRUE)
+
+# remove old index
+data_meta$X <- NULL
+
+write.csv(data_meta, file = paste("output/tables/metaanalysis", filenames_suffix, ".csv", sep = ""))
+
+rm(data_meta, category, data_category, res, study, sd)
+
+
+```
+# list positive + negative associations (metaanalysis)
+```{r}
+data_meta <- read.csv(paste("output/tables/metaanalysis", filenames_suffix, ".csv", sep = ""))
+
+print("positive associations:")
+print(data_meta[data_meta$p_adj < 0.05 & data_meta$mean > 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+print("negative associations:")
+print(data_meta[data_meta$p_adj < 0.05 & data_meta$mean < 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+print("positive associations (additional without adjusting):")
+print(data_meta[data_meta$p < 0.05 & data_meta$p_adj > 0.05 & data_meta$mean > 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+print("negative associations (additional without adjusting):")
+print(data_meta[data_meta$p < 0.05 & data_meta$p_adj > 0.05 & data_meta$mean < 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+rm(data_meta)
+
+```

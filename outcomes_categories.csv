@@ -1,0 +1,65 @@
+outcome,invert,subcategory,label,regression,minvalue
+HADSanx,0,anxiety,HADS anxiety,linear,0
+NMSQAnxiety,0,anxiety,NMSQ Anxiety,binary,NA
+PDQ39Anxiety,0,anxiety,PDQ39 Anxiety,ordinal,NA
+STA,0,anxiety,STA,linear,40
+UPDRS1Anxiety,0,anxiety,UPDRS I Anxiety,ordinal,NA
+DAS,0,apathy,DAS,linear,0
+SAS,0,apathy,SAS,linear,0
+UPDRS1Apathy,0,apathy,UPDRS I Apathy,ordinal,NA
+NMSQAuton,0,autonomic,NMSQ Autonomic,linear,0
+SCOPA,0,autonomic,SCOPA+AC0-AUT,linear,0
+UPDRS1Auton,0,autonomic,UPDRS I Autonomic,linear,0
+FAB,1,cognitionoverall,FAB,linear,18
+MATTIS,1,cognitionoverall,MATTIS,linear,144
+MMSE,1,cognitionoverall,MMSE,linear,30
+MOCA,1,cognitionoverall,MoCA,linear,30
+NMSQCognition,0,cognitionoverall,NMSQ Cognition,ordinal,0
+PDQ39Cognition,0,cognitionoverall,PDQ39 Cognition,linear,0
+SIQCODE,0,cognitionoverall,SIQCDE,linear,1
+UPDRS1Cognition,0,cognitionoverall,UPDRS I Cognition,ordinal,NA
+BDI,0,depression,BDI,linear,0
+GDS,0,depression,GDS,linear,0
+HADSdep,0,depression,HADS depression,linear,0
+NMSQDepression,0,depression,NMSQ Depression,ordinal,NA
+PDQ39Depression,0,depression,PDQ39 Depression,linear,0
+UPDRS1Depression,0,depression,UPDRS I Depression,ordinal,NA
+UPDRS1Fatigue,0,fatigue,UPDRS I Fatigue,ordinal,NA
+NMSQHallucination,0,hallucination,NMSQ Hallucination,ordinal,NA
+UPDRS1Hallucination,0,hallucination,UPDRS I Hallucinations,ordinal,NA
+QUIP,0,impulsivity,QUIP,linear,0
+QUIPRS,0,impulsivity,QUIP+AC0-RS,linear,0
+PDQ39ADL,0,motorgeneral,PDQ39 ADL,linear,0
+UPDRS2,0,motorgeneral,UPDRS II,linear,0
+UPDRS3off,0,motorgeneral,UPDRS III off,linear,0
+NMSQ,0,nonmotorgeneral,NMSQ,linear,0
+UPDRS1,0,nonmotorgeneral,UPDRS I,linear,0
+CGIS,0,overallseverity,CGIS,ordinal,NA
+FAQ,0,overallseverity,FAQ,linear,0
+HY,0,overallseverity,H+ACY-Y,ordinal,NA
+PDQ39,0,overallseverity,PDQ39,linear,0
+SEADL,1,overallseverity,SEADL,linear,100
+UPDRS13off,0,overallseverity,UPDRS I+AC0-III off,linear,0
+NMSQPain,0,pain,NMSQ Pain,binary,0
+PDQ39Pain,0,pain,PDQ39 Pain,linear,0
+UPDRS1Pain,0,pain,UPDRS I Pain,ordinal,NA
+AXSCoff,0,pigd/axial,UPDRS III axial off,linear,0
+FOGAC,0,pigd/axial,FOGAC,linear,0
+FOGQ,0,pigd/axial,FOGQ,linear,0
+GABSExam,0,pigd/axial,GABS Examination,linear,0
+GABSQues,0,pigd/axial,GABS Questionaire,linear,0
+NFOGQ,0,pigd/axial,NFOGQ,linear,0
+PDQ39Mobility,0,pigd/axial,PDQ39 Mobility,linear,0
+PIGDoff,0,pigd/axial,PIGD off,linear,0
+TUG,0,pigd/axial,TuG,linear,0
+ESS,0,sleepgeneral,ESS,linear,0
+NMSQSleep,0,sleepgeneral,NMSQ Sleep,ordinal,NA
+PDSS,1,sleepgeneral,PDSS,linear,150
+UPDRS1Sleep,0,sleepgeneral,UPDRS I Sleep,linear,0
+NMSQRBD,0,sleeprem,NMSQ RBD,ordinal,NA
+RBDHK,0,sleeprem,RBD+AC0-HK,linear,0
+RBDScr,0,sleeprem,RBD+AC0-SQ,linear,0
+NMSQSmell,0,smell,NMSQ Smell,binary,NA
+Sniffin,1,smell,Sniffin Test,linear,16
+UPSIT,1,smell,UPSIT,linear,40
+TDoff,0,tremor,TD off,linear,0

@@ -1,0 +1,296 @@
+# Script for calculating association of baseline symptoms with subjective diagnostic delay (Fig. S2, Table S2 & Forest Plots)
+```{r}
+library(meta)
+library(tidyr)
+library(psych)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(grid)
+library(tidyverse)
+library(ggplot2)
+
+# general definitions
+study_names <- c("ppmi", "iceberg") # this analysis is based on PPMI and ICEBERG data only as LuxPARK patients exhibit mostly advanced disease stages
+
+# label definitions
+category_names <- stack(list("overall_severity" = "Overall severity",
+"apathy" = "Apathy",
+"nonmotor_general" = "Non motor symptoms",
+"motor_general" = "Motor symptoms",
+"pigd/axial" = "Axial & PIGD",
+"depression" = "Depression",
+"cognition_conceptualization" = "Conceptualization",
+"sleep_general" = "Sleep",
+"fatigue" = "Fatigue",
+"hallucination" = "Hallucinations",
+"anxiety" = "Anxiety",
+"cognition_language" = "Language",
+"cognition_visuexec" = "Visuo-executive",
+"cognition_overall" = "Overall cognition",
+"autonomic" = "Autonomic",
+"cognition_memory" = "Memory",
+"impulsivity" = "Impulsivity",
+"pain" = "Pain",
+"tremor" = "Tremor",
+"cognition_attention" = "Attention",
+"sleep_rem" = "RBD",
+"smell" = "Smell"))
+colnames(category_names) <- c("label", "category")
+
+# load outcome-category mapping
+outcomes_categories <- read.csv("outcomes_categories.csv")
+```
+
+
+# function definitions
+```{r}
+# min max normalization
+min_max_norm <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+# check if enough measurements of the outcome are available for the analysis
+check_prediction_conditions <- function(data, outcome, skip_min_obs = 30, verbose = FALSE) {
+  # skip, if outcome is not measured in this study
+  if (!(outcome %in% colnames(data))) {
+    if (verbose) {
+      print(paste(outcome, "skipped because not in data columns."))
+    }
+    return(FALSE)
+  }
+
+  # select columns
+  data_test <- data[c("Patient_ID", "time_to_diagnosis", outcome)]
+
+  # rename the outcome column (special characters cause errors)
+  colnames(data_test)[colnames(data_test) == outcome] <- "outcome"
+
+  # remove rows with NA values as required for the models used below
+  data_test <- drop_na(data_test)
+
+  # skip outcomes with less than x measurements
+  if (nrow(data_test) < skip_min_obs) {
+    if (verbose) {
+      print(paste(outcome, "skipped because <", skip_min_obs, "observations"))
+    }
+    return(FALSE)
+  }
+
+  return(TRUE)
+}
+
+# calculate the time between subjective motor symptom onset and time of definite diagnosis
+calc_subj_time_to_diagnosis <- function(data, study) {
+  if (study == "ppmi") {
+    # Calculate diagnostic delay in years (doo - dod)
+    data$SXMO <- as.integer(data$SXMO)
+    data$doo <- as.Date(paste(data$SXYEAR, data$SXMO, "01", sep = "-"), "%Y-%m-%d")
+    data$dod <- as.Date(data$dod)
+    data$time_to_diagnosis <- as.numeric(difftime(data$dod, data$doo, units = "days")) / 365.25
+
+  } else if (study == "iceberg") {
+    data$time_to_diagnosis <- data$age_at_diagnosis_years - data$age_at_first_motor_symptoms_years
+
+  return(data)
+}
+```
+# load clinical study data
+```{r}
+studies_bl <- list()
+for (study_name in study_names) {
+  if (file.exists(paste("studydata/", study_name, "_bl.csv", sep = ""))) {
+    studies_bl[[study_name]] <- calc_subj_time_to_diagnosis(read.csv(paste("studydata/", study_name, "_bl.csv", sep = "")), study_name)
+  }
+}
+rm(study_name)
+```
+
+# correlate baseline symptoms with subjective diagnostic delay
+```{r}
+stats_all <- data.frame()
+
+for (study in names(studies_bl)) {
+    print(study)
+    for (outcome in outcomes_categories$outcome) {
+        print(paste("...", outcome, sep = ""))
+
+        regression_type <- outcomes_categories[outcomes_categories$outcome == outcome, ]$regression
+        invert <- outcomes_categories[outcomes_categories$outcome == outcome, ]$invert
+        min_value <- outcomes_categories[outcomes_categories$outcome == outcome, ]$min_value
+
+        if (!check_prediction_conditions(data = studies_bl[[study]], outcome = outcome)) {
+            print(".......skipped")
+            next
+        }
+
+        data_filtered <- drop_na(studies_bl[[study]][c("Patient_ID", "time_to_diagnosis", outcome)])
+
+        # if all predictions are equal, we can't calculate a correlation coefficient -> throw an error and continue with next outcome
+            if (length(unique(data_filtered$prediction)) == 1) {
+            stop("singular BL values")
+        }
+
+        # correlation
+        corr_res <- switch(regression_type,
+                           "linear" = cor.test(data_filtered$time_to_diagnosis, data_filtered[[outcome]], method = "pearson"),
+                           "ordinal" = corr.test(data_filtered$time_to_diagnosis, data_filtered[[outcome]], method = "kendall"), # from psych package
+                           "binary" = cor.test(data_filtered$time_to_diagnosis, data_filtered[[outcome]], method = "pearson")) # point-biserial
+
+        if (regression_type == "ordinal") { # values are stored in another way by the psych package
+            stats <- data.frame(study = study, outcome = outcome, regression = regression_type, coef = corr_res$ci$r, corr_p = corr_res$ci$p,
+                                coef_lower = corr_res$ci$lower, coef_upper = corr_res$ci$upper, n = nrow(data_filtered))
+        } else {
+            stats <- data.frame(study = study, outcome = outcome, regression = regression_type, coef = corr_res$estimate[[1]], corr_p = corr_res$p.value, coef_lower = corr_res$conf.int[1], coef_upper = corr_res$conf.int[2], n = nrow(data_filtered))
+        }
+        stats_all <- rbind(stats_all, stats)
+    }
+}
+
+# Benjamini Hochberg p-value correction
+stats_all$corr_p_adj <- p.adjust(stats_all$corr_p, method = "BH")
+
+# sort data.frame by p value
+stats_all <- stats_all[order(stats_all$corr_p), ]
+
+# calculate SEM of correlation coefficient estimate from confidence interval
+stats_all$coef_sem <- abs(stats_all$coef_upper - stats_all$coef_lower) / 2 / 1.96
+
+# save to disk, one file per study
+for (study in unique(stats_all$study)) {
+    write.csv(stats_all[stats_all$study == study, ], file = paste("intermediate_results/coefs_subj_", study, ".csv", sep = ""))
+}
+
+print("positive associations:")
+print(stats_all[stats_all$corr_p_adj < 0.05 & stats_all$coef > 0, ][c("study", "outcome", "coef")])
+
+print("negative associations:")
+print(stats_all[stats_all$corr_p_adj < 0.05 & stats_all$coef < 0, ][c("study", "outcome", "coef")])
+
+rm(study, outcome, regression_type, data_filtered, corr_res, stats, invert, min_value)
+
+```
+
+# create metaanalysis + forest plots + save
+```{r}
+# meta analysis function for one symptom domain
+perform_metaanalysis <- function(data, category, create_plot) {
+  study_to_label <- function(study) {
+    if (study == "ppmi") {
+      return("PPMI")
+    } else if (study == "iceberg") {
+      return("ICEBERG")
+    } else {
+      return("LuxPARK")
+    }
+  }
+
+  # invert scores where low value means high impairment / high value means less impairment
+  data[data$invert == 1, ]$coef <- -1 * data[data$invert == 1, ]$coef
+  data[data$invert == 1, ]$coef_lower <- -1 * data[data$invert == 1, ]$coef_lower
+  data[data$invert == 1, ]$coef_upper <- -1 * data[data$invert == 1, ]$coef_upper
+
+  meta_res <- metamean(n = data$n,
+                       mean = data$coef,
+                       sd = data$coef_sem * sqrt(data$n),
+                       data = data,
+                       subgroup = lapply(data$study, study_to_label),
+                       studlab = data$label,
+                       sm = "MRAW",
+                       null.effect = 0,
+                       random = TRUE,
+                       common = FALSE,
+                       title = category_names[category_names$category == category, ]$label)
+
+  if (create_plot) {
+    most_extreme_ci_value <- max(abs(meta_res$upper), # individual study
+                                 abs(meta_res$lower), # individual study
+                                 abs(meta_res$lower.random), # pooled effect
+                                 abs(meta_res$upper.random), # pooled effect
+                                 abs(meta_res$lower.random.w), # subgroup pooled effect
+                                 abs(meta_res$upper.random.w)) # subgroup pooled effect
+
+    forest.meta(meta_res,
+                rightcols = c("effect", "ci"),
+                xlim = c(-most_extreme_ci_value, most_extreme_ci_value),
+                plotwidth = "12 cm",
+                ref = 0,
+                xlab = "<- Associated with early diagnosis | associated with late diagnosis ->",
+                subgroup.hetstat = FALSE,
+                hetstat = FALSE,
+                test.subgroup = FALSE,
+                text.addline1 = paste("\n\n\n\n\n\nThree-level metaanalysis using random\neffects to calculate an overall\nregression coefficient estimate for\n",
+                                      category_names[category_names$category == category, ]$label,
+                                      " across cohorts.\nThe dashed line indicates the overall\nmean estimate. The solid line\nindicates no effect.",
+                                      sep = ""),
+                subgroup.name = "Cohort",
+                header.line = "both")
+
+    # add heading
+    grid::grid.text(paste("Forest plot for domain", category_names[category_names$category == category, ]$label), .5, .97, gp = gpar(cex = 1.7))
+  }
+
+  ret <- data.frame(
+    "study" = unlist(c("overall", meta_res$subgroup.levels)),
+    "mean" = unname(c(meta_res$TE.random, meta_res$TE.random.w)),
+    "lower" = unname(c(meta_res$lower.random, meta_res$lower.random.w)),
+    "upper" = unname(c(meta_res$upper.random, meta_res$upper.random.w)),
+    "p" = unname(c(meta_res$pval.random, meta_res$pval.random.w))
+  )
+  ret$category <- category
+  rownames(ret) <- NULL
+
+  return(ret)
+}
+
+# read stats
+stats_all <- data.frame()
+for (study in study_names) {
+  if (file.exists(paste("intermediate_results/coefs_subj_", study, ".csv", sep = ""))) {
+    stats_all <- rbind(stats_all, read.csv(paste("intermediate_results/coefs_subj_", study, ".csv", sep = "")))
+  }
+}
+
+# append category
+stats_all <- merge(stats_all, outcomes_categories[c("outcome", "subcategory", "label", "invert")], by = "outcome", all.x = TRUE, all.y = FALSE)
+
+# perform all meta analyses and save to pdf + csv
+data_meta <- data.frame()
+pdf(file = paste("output/plots/forrestplots_subj.pdf", sep = ""), width = 13, height = 9)
+for (category in unique(stats_all$subcategory)){
+  data_category <- stats_all[stats_all$subcategory == category, ]
+  if (nrow(data_category) > 0) {
+    res <- perform_metaanalysis(data = data_category, category = category, create_plot = TRUE)
+    data_meta <- rbind(data_meta, res)
+  }
+}
+dev.off()
+
+# p-value adjusting (within each study / within overall)
+data_meta$p_adj <- NA
+data_meta$lower_adj <- NA
+data_meta$upper_adj <- NA
+for (study in unique(data_meta$study)) {
+  data_meta[data_meta$study == study, ]$p_adj <- p.adjust(data_meta[data_meta$study == study, ]$p, method = "BH")
+  sd <- (data_meta$upper - data_meta$lower) / 2 / 1.96
+  data_meta$lower_adj <- data_meta$mean - qnorm(1 - 0.05 / (data_meta$p_adj / data_meta$p) / 2) * sd
+  data_meta$upper_adj <- data_meta$mean +  qnorm(1 - 0.05 / (data_meta$p_adj / data_meta$p) / 2) * sd
+}
+
+# add category label
+data_meta <- merge(data_meta, category_names, by.x = "category", by.y = "category", all.x = TRUE)
+
+# remove old index
+data_meta$X <- NULL
+
+write.csv(data_meta, file = paste("output/tables/metaanalysis_subj.csv", sep = ""))
+
+print("positive associations:")
+print(data_meta[data_meta$p_adj < 0.05 & data_meta$mean > 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+print("negative associations:")
+print(data_meta[data_meta$p_adj < 0.05 & data_meta$mean < 0 & data_meta$study == "overall", ][c("category", "mean")])
+
+rm(data_meta, category, data_category, res, study, sd)
+
+```
